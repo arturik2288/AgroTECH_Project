@@ -1,21 +1,6 @@
-import { COLORS } from "@/constants/ui";
-import { StatusBar, StyleSheet, View } from "react-native";
-import Header from "./layout/Header";
+// app/index.tsx
+import { Redirect } from "expo-router";
 
 export default function Index() {
-  return (
-    <View
-      style={styles.container}
-    >
-      <StatusBar barStyle={"dark-content"} />
-      <Header /> 
-    </View>
-  );
+  return <Redirect href="(tabs)/camera" />;
 }
-
-const styles = StyleSheet.create({
-  container:{
-    flex: 1,
-    backgroundColor: COLORS.PRIMARY_BACKGORUND,
-  }
-})
