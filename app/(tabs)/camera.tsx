@@ -4,13 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
 import { useRef, useState } from "react";
 import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
-
-// ==== (A) ваш backend ====
-const BACKEND_UPLOAD_URL = "https://your.api/upload"; // <- замени на свой эндпоинт
-
-// ==== (B) Supabase (опционально) ====
-// import { createClient } from "@supabase/supabase-js";
-// const supabase = createClient(process.env.EXPO_PUBLIC_SUPABASE_URL!, process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!);
+import { uploadImageToSupabase } from "../lib/cloud";
 
 type PickOk = { ok: true; uri: string; savedPath: string };
 type PickFail = { ok: false; reason: string; message?: string };
@@ -66,67 +60,26 @@ export default function CameraExpoScreen() {
     return dst.uri;
   };
 
-  // ---- Cloud upload helpers ----
-  const toBlob = async (uri: string) => (await fetch(uri)).blob();
+const handleCloudUpload = async () => {
+  if (!savedPath) {
+    Alert.alert("Сначала выберите/сделайте фото");
+    return;
+  }
+  try {
+    setUploading(true);
+    setCloudUrl(null);
 
-  // (A) upload to your backend as multipart/form-data
-  const uploadViaBackend = async (uri: string) => {
-    const ext = getExt(uri);
-    const name = `photo_${Date.now()}.${ext}`;
-    const type = mimeFromExt(ext);
+    // ⬇️ вот эта строка — загрузка в Supabase
+    const url = await uploadImageToSupabase(savedPath);
 
-    const form = new FormData();
-    form.append("file", { uri, name, type } as any); // RN: не ставим Content-Type вручную
-
-    const res = await fetch(BACKEND_UPLOAD_URL, { method: "POST", body: form });
-    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-    // ожидаем, что сервер вернёт { url: "https://..." }
-    const json = await res.json().catch(() => ({} as any));
-    return json.url as string | undefined;
-  };
-
-  // (B) Supabase Storage (раскомментируй импорты/клиент сверху)
-  // const uploadToSupabase = async (uri: string) => {
-  //   const ext = getExt(uri);
-  //   const name = `photo_${Date.now()}.${ext}`;
-  //   const bucketPath = `uploads/${name}`;
-  //   const blob = await toBlob(uri);
-  //   const { error } = await supabase.storage.from("photos").upload(bucketPath, blob, {
-  //     contentType: mimeFromExt(ext),
-  //     upsert: true,
-  //   });
-  //   if (error) throw error;
-  //   const { data } = supabase.storage.from("photos").getPublicUrl(bucketPath);
-  //   return data.publicUrl as string;
-  // };
-
-  const handleCloudUpload = async () => {
-    if (!savedPath) {
-      Alert.alert("Сначала выберите/сделайте фото");
-      return;
-    }
-    try {
-      setUploading(true);
-      setCloudUrl(null);
-
-      // Вариант А (по умолчанию)
-      const url = await uploadViaBackend(savedPath);
-
-      // Вариант B (Supabase)
-      // const url = await uploadToSupabase(savedPath);
-
-      if (!url) {
-        Alert.alert("Загружено", "Файл отправлен на сервер");
-      } else {
-        setCloudUrl(url);
-        Alert.alert("Загружено", "Фото сохранено в облаке");
-      }
-    } catch (e: any) {
-      Alert.alert("Не удалось загрузить", e?.message || "Ошибка сети");
-    } finally {
-      setUploading(false);
-    }
-  };
+    setCloudUrl(url);
+    Alert.alert("Загружено", "Фото сохранено в облаке");
+  } catch (e: any) {
+    Alert.alert("Не удалось загрузить", e?.message || "Ошибка сети");
+  } finally {
+    setUploading(false);
+  }
+};
 
   // ---- Camera / Library flows ----
   const handleCamera = async (): Promise<PickResult> => {
