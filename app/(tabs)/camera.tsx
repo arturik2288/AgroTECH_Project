@@ -253,7 +253,7 @@ export default function CameraExpoScreen() {
       </Text>
 
       <TouchableOpacity style={[s.btn, s.secondary]} onPress={saveToSystemGallery} disabled={!savedPath || busy}>
-        <Text style={s.btnText}>Сохранить в системную галерею</Text>
+        <Text style={s.btnText}>Анализ фото</Text>
       </TouchableOpacity>
 
       <TouchableOpacity
