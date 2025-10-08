@@ -1,16 +1,15 @@
 // app/lib/cloud.ts
 import { Platform } from 'react-native';
+import { getEmployeeCode } from './storage';
 import { supabase } from './supabase';
 
-// === Настройки ===
-const BUCKET = 'photos';                   // создайте бакет "photos" в Supabase → Storage
-const DEFAULT_SIGN_TTL = 60 * 60 * 24 * 30; // 30 дней
+const BUCKET = 'photos';
+const DEFAULT_SIGN_TTL = 60 * 60 * 24 * 30;
 
-// === Утилиты ===
 const extFromUri = (uri: string) => {
   const q = uri.split('?')[0];
-  const dot = q.lastIndexOf('.');
-  return dot !== -1 ? q.slice(dot + 1).toLowerCase() : 'jpg';
+  const i = q.lastIndexOf('.');
+  return i !== -1 ? q.slice(i + 1).toLowerCase() : 'jpg';
 };
 
 const mimeFromExt = (ext: string) =>
@@ -19,65 +18,52 @@ const mimeFromExt = (ext: string) =>
   ext === 'heic' || ext === 'heif' ? 'image/heic' :
   'image/jpeg';
 
-const rand = (n = 6) =>
-  Array.from({ length: n }, () => 'abcdef0123456789'[Math.floor(Math.random() * 16)]).join('');
+const today = () => new Date().toISOString().slice(0, 10);
+const rand = () => Math.random().toString(36).slice(2, 8);
 
-const today = () => new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+type UploadOpts = {
+  bucket?: string;
+  folder?: string;
+  filename?: string;
+  public?: boolean;
+  expiresIn?: number;
+};
 
-async function getEmployeeCode(): Promise<string | null> {
-  const { data } = await supabase.auth.getUser();
-  const code = (data.user?.user_metadata as any)?.employee_code as string | undefined;
-  return code ?? null;
-}
-
-// === Публичное API ===
-/**
- * Загружает локальный файл-изображение в Supabase Storage и возвращает URL.
- * По умолчанию — signed URL (подпись на 30 дней). Для public-бакета можно включить makePublic.
- */
-export async function uploadImageToSupabase(
-  fileUri: string,
-  opts?: { folder?: string; filename?: string; makePublic?: boolean; expiresIn?: number }
-): Promise<string> {
-  if (!fileUri) throw new Error('Путь к файлу пустой');
-
-  const ext = extFromUri(fileUri);
+/** Универсальная загрузка для Expo/React Native и Web */
+export async function uploadImageToSupabase(uri: string, opts?: UploadOpts): Promise<string> {
+  const bucket = opts?.bucket ?? BUCKET;
+  const ext = extFromUri(uri);
   const contentType = mimeFromExt(ext);
 
-  const code = await getEmployeeCode();
-  const baseFolder = opts?.folder ?? (code ? `employees/${code}` : 'uploads');
-  const filename = opts?.filename ?? `photo_${Date.now()}_${rand(4)}.${ext}`;
+  const code =
+    (await getEmployeeCode()) ??
+    (await supabase.auth.getUser()).data.user?.user_metadata?.employee_code ??
+    'unknown';
+
+  const baseFolder = opts?.folder ?? `employees/${code}`;
+  const filename = opts?.filename ?? `photo_${Date.now()}_${rand()}.${ext}`;
   const objectPath = `${baseFolder}/${today()}/${filename}`;
 
-  // Тело файла: RN → объект с { uri, name, type }, Web → Blob
-  const body =
+  const body: any =
     Platform.OS === 'web'
-      ? await (await fetch(fileUri)).blob()
-      : ({ uri: fileUri, name: filename, type: contentType } as any);
+      ? await (await fetch(uri)).blob()                    // Web → Blob
+      : { uri, name: filename, type: contentType };        // iOS/Android → { uri, name, type }
 
-  // Загрузка
-  const { error: uploadErr } = await supabase
+  const { error } = await supabase
     .storage
-    .from(BUCKET)
+    .from(bucket)
     .upload(objectPath, body, { contentType, upsert: false });
 
-  if (uploadErr) {
-    throw new Error(uploadErr.message || 'Не удалось загрузить файл в Storage');
-  }
+  if (error) throw new Error(error.message);
 
-  // URL: public или signed
-  if (opts?.makePublic) {
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(objectPath);
+  if (opts?.public) {
+    const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
     return data.publicUrl;
+  } else {
+    const ttl = Math.max(60, opts?.expiresIn ?? DEFAULT_SIGN_TTL);
+    const { data: signed } =
+      await supabase.storage.from(bucket).createSignedUrl(objectPath, ttl);
+    return signed?.signedUrl
+      ?? supabase.storage.from(bucket).getPublicUrl(objectPath).data.publicUrl;
   }
-
-  const ttl = Math.max(60, opts?.expiresIn ?? DEFAULT_SIGN_TTL);
-  const { data: signed, error: signErr } =
-    await supabase.storage.from(BUCKET).createSignedUrl(objectPath, ttl);
-
-  if (!signErr && signed?.signedUrl) return signed.signedUrl;
-
-  // Фоллбэк: если бакет public — вернём publicUrl
-  const { data } = supabase.storage.from(BUCKET).getPublicUrl(objectPath);
-  return data.publicUrl;
 }

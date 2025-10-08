@@ -4,6 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
 import { useRef, useState } from "react";
 import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { analyzeImage } from "../lib/ai";
 import { uploadImageToSupabase } from "../lib/cloud";
 
 type PickOk = { ok: true; uri: string; savedPath: string };
@@ -22,6 +23,8 @@ export default function CameraExpoScreen() {
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [cloudUrl, setCloudUrl] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<string | null>(null);
   const onceRef = useRef(false);
 
   // ---- Permissions ----
@@ -161,20 +164,25 @@ const handleCloudUpload = async () => {
     }
   };
 
-  const saveToSystemGallery = async () => {
-    if (!savedPath) {
-      Alert.alert("Сначала выберите/сделайте фото");
-      return;
-    }
-    try {
-      const ok = await ensureLibraryPermission(true);
-      if (!ok) return;
-      await MediaLibrary.saveToLibraryAsync(savedPath);
-      Alert.alert("Сохранено в системную галерею");
-    } catch (e: any) {
-      Alert.alert("Не удалось сохранить", e?.message || "");
-    }
-  };
+const runAnalysis = async () => {
+  if (!savedPath) {
+    Alert.alert("Сначала выберите/сделайте фото");
+   return;
+  }
+  try {
+    setAnalyzing(true);
+    setAnalysis(null);
+    const result = await analyzeImage(savedPath /*, labels? */);
+    const lines = result.top3.map(
+      (t, i) => `${i + 1}) ${t.label} — ${(t.prob * 100).toFixed(1)}% (id=${t.index})`
+    );
+    setAnalysis(lines.join("\n"));
+  } catch (e: any) {
+    Alert.alert("Ошибка анализа", e?.message ?? "Не удалось выполнить инференс");
+  } finally {
+    setAnalyzing(false);
+  }
+};
 
   // ---- UI ----
   return (
@@ -204,10 +212,10 @@ const handleCloudUpload = async () => {
       <Text style={s.path} numberOfLines={2}>
         {savedPath ? `Сохранено: ${savedPath}` : "—"}
       </Text>
-
-      <TouchableOpacity style={[s.btn, s.secondary]} onPress={saveToSystemGallery} disabled={!savedPath || busy}>
-        <Text style={s.btnText}>Сохранить в системную галерею</Text>
-      </TouchableOpacity>
+      
+    <TouchableOpacity style={[s.btn, s.secondary]} onPress={runAnalysis} disabled={!savedPath || busy || analyzing}>
+      <Text style={s.btnText}>{analyzing ? "Анализ…" : "Анализировать"}</Text>
+    </TouchableOpacity>
 
       <TouchableOpacity
         style={[s.btn, s.accent, (!savedPath || uploading) && s.btnDisabled]}
