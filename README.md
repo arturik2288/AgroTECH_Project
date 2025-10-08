@@ -1,2 +1,2 @@
 # AgroTECH_Project
-great!
+add paths to predict.py
