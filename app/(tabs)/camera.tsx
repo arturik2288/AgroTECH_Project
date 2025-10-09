@@ -5,6 +5,11 @@ import * as MediaLibrary from "expo-media-library";
 import { useRef, useState } from "react";
 import { Alert, Image, Platform, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
+// ONNX утилиты
+import { LABELS } from "../../constants/labels";
+import { runOnnx } from "../lib/inference";
+import { imageUriToTensor } from "../lib/preprocess";
+
 // ==== (A) ваш backend ====
 const BACKEND_UPLOAD_URL = "https://your.api/upload"; // <- замени на свой эндпоинт
 
@@ -28,6 +33,7 @@ export default function CameraExpoScreen() {
   const [previewUri, setPreviewUri] = useState<string | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [cloudUrl, setCloudUrl] = useState<string | null>(null);
+  const [infBusy, setInfBusy] = useState(false);              // инференс
   const onceRef = useRef(false);
 
   // ---- Permissions ----
@@ -35,7 +41,6 @@ export default function CameraExpoScreen() {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     return status === "granted";
   };
-  // В Expo Go на Android не просим write-права (см. предыдущие правки)
   const ensureLibraryPermission = async (write = false) => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (perm.status !== "granted") return false;
@@ -80,25 +85,11 @@ export default function CameraExpoScreen() {
 
     const res = await fetch(BACKEND_UPLOAD_URL, { method: "POST", body: form });
     if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
-    // ожидаем, что сервер вернёт { url: "https://..." }
     const json = await res.json().catch(() => ({} as any));
     return json.url as string | undefined;
   };
 
-  // (B) Supabase Storage (раскомментируй импорты/клиент сверху)
-  // const uploadToSupabase = async (uri: string) => {
-  //   const ext = getExt(uri);
-  //   const name = `photo_${Date.now()}.${ext}`;
-  //   const bucketPath = `uploads/${name}`;
-  //   const blob = await toBlob(uri);
-  //   const { error } = await supabase.storage.from("photos").upload(bucketPath, blob, {
-  //     contentType: mimeFromExt(ext),
-  //     upsert: true,
-  //   });
-  //   if (error) throw error;
-  //   const { data } = supabase.storage.from("photos").getPublicUrl(bucketPath);
-  //   return data.publicUrl as string;
-  // };
+  // const uploadToSupabase = async (uri: string) => { /* ... */ };
 
   const handleCloudUpload = async () => {
     if (!savedPath) {
@@ -108,13 +99,7 @@ export default function CameraExpoScreen() {
     try {
       setUploading(true);
       setCloudUrl(null);
-
-      // Вариант А (по умолчанию)
       const url = await uploadViaBackend(savedPath);
-
-      // Вариант B (Supabase)
-      // const url = await uploadToSupabase(savedPath);
-
       if (!url) {
         Alert.alert("Загружено", "Файл отправлен на сервер");
       } else {
@@ -208,6 +193,41 @@ export default function CameraExpoScreen() {
     }
   };
 
+  // ==== ИНФЕРЕНС ПО КНОПКЕ ====
+  async function analyzePhoto() {
+    if (!savedPath || infBusy) return;
+    try {
+      setInfBusy(true);
+
+      // 1) препроцесс (ПОСТАВЬ реальные размеры/нормировку твоей модели)
+      const { tensor, shape } = await imageUriToTensor(savedPath, {
+        width: 224,
+        height: 224,
+        nchw: true,                          // если модель NHWC — поставь false
+        mean: [0.485, 0.456, 0.406],
+        std:  [0.229, 0.224, 0.225],
+      });
+
+      // 2) запуск ONNX офлайн
+      const raw = await runOnnx(tensor, shape); // Float32Array
+
+      // 3) постпроцесс: софтмакс и топ-1
+      const scores = Array.from(raw);
+      const max = Math.max(...scores);
+      const exps = scores.map(v => Math.exp(v - max));
+      const sum  = exps.reduce((a, b) => a + b, 0);
+      const probs = exps.map(e => e / sum);
+      const idx = probs.indexOf(Math.max(...probs));
+      const label = LABELS[idx] ?? `class_${idx}`;
+
+      Alert.alert('Результат анализа', `${label}\n${(probs[idx] * 100).toFixed(1)}%`);
+    } catch (e: any) {
+      Alert.alert('Ошибка анализа', e?.message ?? String(e));
+    } finally {
+      setInfBusy(false);
+    }
+  }
+
   const saveToSystemGallery = async () => {
     if (!savedPath) {
       Alert.alert("Сначала выберите/сделайте фото");
@@ -222,6 +242,8 @@ export default function CameraExpoScreen() {
       Alert.alert("Не удалось сохранить", e?.message || "");
     }
   };
+
+  const canAnalyze = !!savedPath && !busy && !infBusy;
 
   // ---- UI ----
   return (
@@ -252,10 +274,16 @@ export default function CameraExpoScreen() {
         {savedPath ? `Сохранено: ${savedPath}` : "—"}
       </Text>
 
-      <TouchableOpacity style={[s.btn, s.secondary]} onPress={saveToSystemGallery} disabled={!savedPath || busy}>
-        <Text style={s.btnText}>Анализ фото</Text>
+      {/* Кнопка анализа: отправляет изображение в модель и показывает Alert */}
+      <TouchableOpacity
+        style={[s.btn, s.secondary, (!canAnalyze) && s.btnDisabled]}
+        onPress={analyzePhoto}
+        disabled={!canAnalyze}
+      >
+        <Text style={s.btnText}>{infBusy ? "Думаю…" : "Анализ фото"}</Text>
       </TouchableOpacity>
 
+      {/* Кнопка загрузки в облако — как было */}
       <TouchableOpacity
         style={[s.btn, s.accent, (!savedPath || uploading) && s.btnDisabled]}
         onPress={handleCloudUpload}
